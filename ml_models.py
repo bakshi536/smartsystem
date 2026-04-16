@@ -113,40 +113,74 @@ feature_imp_mess = pd.Series(rf_mess.feature_importances_, index=feat_mess).sort
 feature_imp_mess.to_csv(f"{MODEL_DIR}/mess_feature_importance.csv")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MODEL 3 — FOOD QUANTITY ESTIMATOR PER MEAL
-# Goal: Estimate kg of food needed per meal (footfall × per-person avg)
+# MODEL 3 — REALISTIC FOOD QUANTITY ESTIMATOR
 # ═══════════════════════════════════════════════════════════════════════════════
 print("\n" + "="*60)
-print("MODEL 3 — Food Quantity Estimator")
+print("MODEL 3 — Realistic Food Quantity Estimator")
 print("="*60)
 
-# Food consumption (grams per person) per meal — realistic college mess values
+# Adjusted realistic consumption (grams/person)
 food_per_person = {
-    "Breakfast": {"Rice/Upma": 200, "Dal/Curry": 150, "Bread": 100},
-    "Lunch":     {"Rice": 350, "Dal": 200, "Sabzi": 150, "Roti": 120},
-    "Snacks":    {"Tea": 150, "Snack Item": 100},
-    "Dinner":    {"Rice": 300, "Dal": 200, "Sabzi": 150, "Roti": 120},
+    "Breakfast": {"Upma": 180, "Tea": 120, "Bread": 80},
+    "Lunch":     {"Rice": 300, "Dal": 180, "Sabzi": 130, "Roti": 100},
+    "Snacks":    {"Tea": 120, "Snack": 80},
+    "Dinner":    {"Rice": 280, "Dal": 180, "Sabzi": 130, "Roti": 100},
 }
 
-# Use predicted footfall from model 2 to estimate food
+# Meal-specific behavior
+consumption_factor = {
+    "Breakfast": 0.85,
+    "Lunch": 1.0,
+    "Snacks": 0.75,
+    "Dinner": 0.95
+}
+
+# Buffer (extra cooking)
+buffer_factor = {
+    "Breakfast": 1.05,
+    "Lunch": 1.10,
+    "Snacks": 1.05,
+    "Dinner": 1.08
+}
+
+# Predict footfall
 mess_pred = mess_daily.copy()
 mess_pred["pred_footfall"] = rf_mess.predict(mess_daily[feat_mess].fillna(0))
 
 food_rows = []
+
 for meal, items in food_per_person.items():
     subset = mess_pred[mess_pred["meal_type"] == meal]
+
     for item, grams in items.items():
-        subset = subset.copy()
-        subset["food_item"]     = item
-        subset["qty_kg_needed"] = (subset["pred_footfall"] * grams / 1000).round(2)
-        food_rows.append(subset[["date","meal_type","food_item",
-                                  "pred_footfall","qty_kg_needed"]])
+        sub = subset.copy()
+
+        # 🔹 variability (people eat different amounts)
+        variation = np.random.uniform(0.9, 1.1, size=len(sub))
+
+        # 🔹 realistic food calculation
+        qty = (
+            sub["pred_footfall"]
+            * grams
+            * consumption_factor[meal]
+            * buffer_factor[meal]
+            * variation
+            / 1000
+        )
+
+        sub["food_item"] = item
+        sub["qty_kg_needed"] = qty.round(1)
+
+        food_rows.append(sub[[
+            "date", "meal_type", "food_item",
+            "pred_footfall", "qty_kg_needed"
+        ]])
 
 food_df = pd.concat(food_rows).sort_values(["date","meal_type"])
 food_df.to_csv(f"{MODEL_DIR}/food_quantity_estimates.csv", index=False)
-print(f"  ✓ Food quantity estimates saved — {len(food_df):,} rows")
-print(f"  Sample output:")
-print(food_df[food_df["meal_type"]=="Lunch"].head(6).to_string(index=False))
+
+print(f"  ✓ Realistic food estimates saved — {len(food_df):,} rows")
+print(food_df.head(6).to_string(index=False))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MODEL 4 — ELECTRICITY ANOMALY DETECTOR

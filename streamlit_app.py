@@ -115,8 +115,6 @@ avg_att   = att_f["status_bin"].mean()*100 if len(att_f)>0 else 0
 avg_mb    = wifi_f["total_mb"].mean() if len(wifi_f)>0 else 0
 total_kwh = elec_f["consumption_kwh"].sum() if len(elec_f)>0 else 0
 avg_mess  = mess_f["footfall"].mean() if len(mess_f)>0 else 0
-anomalies = int(elec_f["predicted_anomaly"].sum()) if "predicted_anomaly" in elec_f.columns else 0
-at_risk   = int((master_f["daily_att"]<0.4).sum()) if "daily_att" in master_f.columns else 0
 
 k1,k2,k3,k4,k5,k6 = st.columns(6)
 for col,icon,val,label,color in [
@@ -124,8 +122,6 @@ for col,icon,val,label,color in [
     (k2,"📶",f"{avg_mb:.0f} MB","WiFi/Student/Day","#22d3ee"),
     (k3,"⚡",f"{total_kwh:,.0f}","Total kWh","#fbbf24"),
     (k4,"🍽️",f"{avg_mess:.0f}","Avg Meal Footfall","#4ade80"),
-    (k5,"🚨",f"{anomalies}","Power Anomalies","#f87171"),
-    (k6,"⚠️",f"{at_risk:,}","At-Risk Records","#f472b6"),
 ]:
     col.markdown(f'<div class="kpi-card" style="--accent:{color}"><div class="kpi-icon">{icon}</div><div class="kpi-val">{val}</div><div class="kpi-label">{label}</div></div>', unsafe_allow_html=True)
 
@@ -138,7 +134,26 @@ if len(lf)>0:
     m1,m2,m3,m4 = st.columns(4)
     for meal,col in zip(["Breakfast","Lunch","Snacks","Dinner"],[m1,m2,m3,m4]):
         sub = ft[ft["meal_type"]==meal]
-        pf  = int(sub["pred_footfall"].iloc[0]) if len(sub)>0 else 0
+        pf_model = int(sub["pred_footfall"].iloc[0])
+
+        # historical avg from your dataset
+        pf_avg = int(
+        mess_f[mess_f["meal_type"] == meal]["footfall"].mean()
+        )
+        # combine
+        pf = int(0.6 * pf_model + 0.4 * pf_avg)
+        
+        total_students = 1000   # from your dataset
+
+        if meal == "Breakfast":
+            pf = max(pf, int(0.45 * total_students))   # minimum realistic turnout
+
+        elif meal == "Lunch":
+            pf = max(pf, int(0.7 * total_students))
+
+        elif meal == "Dinner":
+            pf = max(pf, int(0.75 * total_students))
+            
         clr = MEAL_COLORS[meal]
         items = FOOD_MAP[meal]
         fhtml = "".join([f'<div class="food-item"><div class="food-item-name">{k}</div><div class="food-item-qty">{pf*v/1000:.1f}kg</div></div>' for k,v in items.items()])
@@ -170,29 +185,6 @@ fig3 = go.Figure(go.Bar(x=da["status_bin"]*100,y=da["department"],orientation="h
 fig3.update_layout(**THEME,title="Attendance by Department",xaxis_range=[0,110])
 a3.plotly_chart(fig3,use_container_width=True)
 
-b1,b2 = st.columns([1,2])
-subj = att_f.groupby("subject")["status_bin"].mean().sort_values().reset_index()
-fig4 = go.Figure(go.Bar(x=subj["status_bin"]*100,y=subj["subject"],orientation="h",
-    marker=dict(color=subj["status_bin"]*100,colorscale="Blues"),
-    text=[f"{v:.1f}%" for v in subj["status_bin"]*100],textposition="outside"))
-fig4.update_layout(**THEME,title="Attendance by Subject",xaxis_range=[0,110])
-b1.plotly_chart(fig4,use_container_width=True)
-
-hd = att_f.groupby(["department","day_of_week"])["status_bin"].mean().unstack().fillna(0)
-do = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
-hd = hd.reindex(columns=[d for d in do if d in hd.columns])
-fig5 = px.imshow(hd*100,color_continuous_scale="Blues",labels=dict(color="Att %"),title="Heatmap: Dept × Day")
-fig5.update_layout(**THEME)
-b2.plotly_chart(fig5,use_container_width=True)
-
-st.markdown('<div class="section-title">⚠️ At-Risk Students (Attendance &lt; 50%)</div>', unsafe_allow_html=True)
-rdf = att_f.groupby("student_id").agg(att_rate=("status_bin","mean"),total=("status_bin","count"),absences=("status_bin",lambda x:(x==0).sum())).reset_index()
-rdf = rdf[rdf["att_rate"]<0.5].sort_values("att_rate").head(15)
-rdf["att_rate"] = (rdf["att_rate"]*100).round(1)
-rdf["Risk"] = rdf["att_rate"].apply(lambda x:"🔴 Critical" if x<35 else "🟠 High")
-rdf.columns=["Student ID","Att %","Classes","Absences","Risk"]
-st.dataframe(rdf,use_container_width=True,hide_index=True,
-    column_config={"Att %":st.column_config.ProgressColumn(min_value=0,max_value=100,format="%.1f%%")})
 
 # WIFI
 st.markdown('<div class="section-title">📶 WiFi Usage Analytics</div>', unsafe_allow_html=True)
@@ -210,14 +202,6 @@ fig7 = go.Figure(go.Bar(x=st2["date"],y=st2["sessions"],marker_color="#6366f1",o
 fig7.update_layout(**THEME,title="Avg Sessions/Student/Day")
 w2.plotly_chart(fig7,use_container_width=True)
 
-if "total_mb" in master_f.columns and "daily_att" in master_f.columns:
-    samp = master_f.dropna(subset=["total_mb","daily_att"]).sample(min(1500,len(master_f)))
-    fig8 = px.scatter(samp,x="total_mb",y="daily_att",
-        color="department" if "department" in samp.columns else None,
-        opacity=0.5,color_discrete_sequence=COLORS,
-        labels={"total_mb":"WiFi (MB)","daily_att":"Attendance Rate"})
-    fig8.update_layout(**THEME,title="WiFi vs Attendance Correlation")
-    w3.plotly_chart(fig8,use_container_width=True)
 
 # ELECTRICITY
 st.markdown('<div class="section-title">⚡ Electricity Consumption & Anomalies</div>', unsafe_allow_html=True)
@@ -226,28 +210,15 @@ bld = elec_f.groupby(["date","building"])["consumption_kwh"].sum().reset_index()
 fig9 = px.line(bld,x="date",y="consumption_kwh",color="building",color_discrete_sequence=COLORS,labels={"consumption_kwh":"kWh"})
 fig9.update_layout(**THEME,title="Daily Consumption by Building")
 e1.plotly_chart(fig9,use_container_width=True)
-slot = elec_f.groupby("time_slot")["consumption_kwh"].mean().reset_index()
-fig10 = go.Figure(go.Bar(x=slot["time_slot"],y=slot["consumption_kwh"],
-    marker=dict(color=slot["consumption_kwh"],colorscale="YlOrRd"),
-    text=[f"{v:.2f}" for v in slot["consumption_kwh"]],textposition="outside"))
-fig10.update_layout(**THEME,title="Avg Consumption by Time Slot")
-e2.plotly_chart(fig10,use_container_width=True)
 
-e3,e4 = st.columns([2,1])
-ne = elec_f[elec_f["predicted_anomaly"]==0]
-ae = elec_f[elec_f["predicted_anomaly"]==1]
-fig11 = go.Figure()
-fig11.add_trace(go.Scatter(x=ne["date"],y=ne["consumption_kwh"],mode="markers",name="Normal",marker=dict(color="#22d3ee",size=3,opacity=0.3)))
-fig11.add_trace(go.Scatter(x=ae["date"],y=ae["consumption_kwh"],mode="markers",name="⚠️ Anomaly",marker=dict(color="#f87171",size=9,symbol="x",line=dict(width=2))))
-fig11.update_layout(**THEME,title="Anomaly Detection — All Buildings")
-e3.plotly_chart(fig11,use_container_width=True)
-at2 = elec_f[elec_f["predicted_anomaly"]==1][["date","building","time_slot","consumption_kwh","rolling_3d_avg"]].copy()
-if len(at2)>0:
-    at2["Excess %"]=((at2["consumption_kwh"]/at2["rolling_3d_avg"]-1)*100).round(1)
-    at2=at2.sort_values("consumption_kwh",ascending=False).head(10)
-    at2.columns=["Date","Building","Slot","kWh","3d Avg","Excess %"]
-    e4.markdown("**⚠️ Top Anomalies**")
-    e4.dataframe(at2.reset_index(drop=True),use_container_width=True,hide_index=True,height=280)
+# slot = elec_f.groupby("time_slot")["consumption_kwh"].mean().reset_index()
+# fig10 = go.Figure(go.Bar(x=slot["time_slot"],y=slot["consumption_kwh"],
+#     marker=dict(color=slot["consumption_kwh"],colorscale="YlOrRd"),
+#     text=[f"{v:.2f}" for v in slot["consumption_kwh"]],textposition="outside"))
+# fig10.update_layout(**THEME,title="Avg Consumption by Time Slot")
+# e2.plotly_chart(fig10,use_container_width=True)
+
+
 
 # MESS
 st.markdown('<div class="section-title">🍽️ Mess Footfall Analytics</div>', unsafe_allow_html=True)
@@ -270,26 +241,7 @@ ms3.plotly_chart(fig14,use_container_width=True)
 
 # ML PREDICTIONS
 st.markdown('<div class="section-title">🤖 Live ML Predictions</div>', unsafe_allow_html=True)
-p1,p2,p3 = st.columns(3)
-
-with p1:
-    st.markdown("**🎯 Attendance Risk Predictor**")
-    ra=st.slider("7-day Attendance Rate",0.0,1.0,0.75,0.01,key="r1")
-    mb=st.slider("Yesterday WiFi (MB)",0,2000,300,key="r2")
-    ss=st.slider("WiFi Sessions",0,10,3,key="r3")
-    dv=st.selectbox("Department",students["department"].unique(),key="r4")
-    dy=st.selectbox("Day",["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"],key="r5")
-    if st.button("🔮 Predict Risk",use_container_width=True):
-        try:
-            ld=models["label_enc_dept"]; lw=models["label_enc_day"]
-            de=ld.transform([dv])[0] if dv in ld.classes_ else 0
-            we=lw.transform([dy])[0] if dy in lw.classes_ else 0
-            X=np.array([[ra,mb,ss,de,we,1 if dy=="Saturday" else 0,10,2]])
-            pred=models["attendance_risk_model"].predict(X)[0]
-            prob=models["attendance_risk_model"].predict_proba(X)[0]
-            clr={"High Risk":"#f87171","Medium Risk":"#fbbf24","Low Risk":"#4ade80"}.get(pred,"#4ade80")
-            st.markdown(f'<div style="background:#0f172a;border:1px solid {clr}50;border-radius:10px;padding:1rem;text-align:center;margin-top:0.5rem"><div style="font-size:0.7rem;color:#64748b">PREDICTION</div><div style="font-size:1.8rem;font-weight:800;color:{clr}">{pred}</div><div style="font-size:0.75rem;color:#64748b">Confidence: {max(prob)*100:.1f}%</div></div>',unsafe_allow_html=True)
-        except Exception as ex: st.error(str(ex))
+p2,p3 = st.columns(2)
 
 with p2:
     st.markdown("**🍽️ Mess Footfall + Food Needed**")
@@ -327,24 +279,3 @@ with p3:
             st.markdown(f'<div style="background:#0f172a;border:1px solid #22d3ee50;border-radius:10px;padding:1rem;text-align:center;margin-top:0.5rem"><div style="font-size:0.7rem;color:#64748b">PREDICTED USAGE</div><div style="font-size:2rem;font-weight:800;color:#22d3ee">{pw:.0f} MB</div><div style="font-size:0.85rem;color:#64748b">= {pw/1024:.2f} GB</div></div>',unsafe_allow_html=True)
         except Exception as ex: st.error(str(ex))
 
-# FEATURE IMPORTANCE
-st.markdown('<div class="section-title">📈 Model Feature Importance</div>', unsafe_allow_html=True)
-fi1,fi2=st.columns(2)
-try:
-    af=pd.read_csv(f"{MDIR}/attendance_feature_importance.csv",names=["Feature","Importance"],header=0).sort_values("Importance")
-    fig15=go.Figure(go.Bar(x=af["Importance"],y=af["Feature"],orientation="h",
-        marker=dict(color=af["Importance"],colorscale="Blues"),
-        text=[f"{v:.3f}" for v in af["Importance"]],textposition="outside"))
-    fig15.update_layout(**THEME,title="Attendance Model Features")
-    fi1.plotly_chart(fig15,use_container_width=True)
-except: pass
-try:
-    mf=pd.read_csv(f"{MDIR}/mess_feature_importance.csv",names=["Feature","Importance"],header=0).sort_values("Importance")
-    fig16=go.Figure(go.Bar(x=mf["Importance"],y=mf["Feature"],orientation="h",
-        marker=dict(color=mf["Importance"],colorscale="Greens"),
-        text=[f"{v:.3f}" for v in mf["Importance"]],textposition="outside"))
-    fig16.update_layout(**THEME,title="Mess Footfall Model Features")
-    fi2.plotly_chart(fig16,use_container_width=True)
-except: pass
-
-st.markdown('<div style="text-align:center;padding:2rem 0 1rem;color:#334155;font-size:0.75rem">Campus Analytics · Streamlit + Plotly · Simulated Data</div>', unsafe_allow_html=True)
